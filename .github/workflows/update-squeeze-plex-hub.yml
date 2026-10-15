@@ -1,0 +1,45 @@
+name: Mise à jour Squeeze Plex Hub
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # tous les jours vers 3h (UTC)
+  workflow_dispatch: # bouton "Run workflow" pour lancer à la main
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Chercher la dernière version publiée (arm64 + amd64)
+        id: latest
+        run: |
+          latest=$(curl -fsSL "https://hub.docker.com/v2/repositories/onmomo/squeeze-plex-hub/tags?page_size=100" \
+            | jq -r '.results[]
+                | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
+                | select([.images[].architecture] | index("arm64") and index("amd64"))
+                | .name' \
+            | sort -V | tail -n 1)
+          current=$(sed -nE 's/^version: "?([^"]+)"?/\1/p' squeeze_plex_hub/config.yaml)
+          echo "Version actuelle : $current / dernière publiée : $latest"
+          if [ -z "$latest" ]; then echo "Aucune version trouvée" >&2; exit 1; fi
+          newest=$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)
+          if [ "$newest" != "$current" ]; then
+            echo "update=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Mettre à jour config.yaml et le changelog
+        if: steps.latest.outputs.update == 'true'
+        env:
+          VERSION: ${{ steps.latest.outputs.version }}
+        run: |
+          sed -i -E "s/^version: .*/version: \"$VERSION\"/" squeeze_plex_hub/config.yaml
+          sed -i "0,/^## /s//## $VERSION\n\n- Image officielle $VERSION : https:\/\/github.com\/onmomo\/squeeze-plex-hub\/releases\n\n## /" squeeze_plex_hub/CHANGELOG.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Squeeze Plex Hub $VERSION"
+          git push
